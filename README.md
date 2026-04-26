@@ -166,4 +166,3 @@ CPU > 50%          → HPA detects    → auto scales   ← auto scaling!
 ## Related Repositories
 
 - [flask-three-tier](https://github.com/sar0j/flask-three-tier) — Docker + ECS + GitHub Actions
-- [eks-three-tier](https://github.com/sar0j/eks-three-tier) — EKS + Terraform
