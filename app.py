@@ -2,8 +2,16 @@ from flask import Flask, jsonify, request
 import pymysql
 import socket
 import os
+from prometheus_flask_exporter import PrometheusMetrics
 
 app = Flask(__name__)
+
+# Initialize Prometheus metrics
+metrics = PrometheusMetrics(app)
+
+# Static metrics
+metrics.info('flask_app_info', 'Flask app info', 
+    version=os.environ.get('APP_VERSION', '1.0.0'))
 
 DB_HOST     = os.environ.get("DB_HOST", "localhost")
 DB_USER     = os.environ.get("DB_USER", "admin")
@@ -25,15 +33,17 @@ def home():
     <h1>Flask App - Three Tier Architecture</h1>
     <p><b>Container:</b> {socket.gethostname()}</p>
     <p><b>Version:</b> {os.environ.get('APP_VERSION', '1.0.0')}</p>
-    <p><b>Deployed by:</b> ArgoCD CI/CD Updated ✅</p>
-    <p><b>Pipeline:</b> Test → Build → Push ECR → Deploy ECS</p>
     <p><a href='/users'>View Users</a></p>
     <p><a href='/health'>Health Check</a></p>
+    <p><a href='/metrics'>Prometheus Metrics</a></p>
     """
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "healthy", "container": socket.gethostname()}), 200
+    return jsonify({
+        "status": "healthy",
+        "container": socket.gethostname()
+    }), 200
 
 @app.route("/users", methods=["GET"])
 def get_users():
@@ -68,7 +78,9 @@ def delete_user(user_id):
     try:
         conn = get_db()
         with conn.cursor() as cursor:
-            cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            cursor.execute(
+                "DELETE FROM users WHERE id = %s", (user_id,)
+            )
         conn.commit()
         conn.close()
         return jsonify({"message": "User deleted"}), 200

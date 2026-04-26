@@ -5,11 +5,16 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "flask-chart.labels" . | nindent 4 }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "5000"
+    prometheus.io/path: "/metrics"
 spec:
   selector:
     {{- include "flask-chart.selectorLabels" . | nindent 4 }}
   ports:
-    - protocol: TCP
+    - name: http
+      protocol: TCP
       port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}
   type: {{ .Values.service.type }}
