@@ -1,60 +1,181 @@
-# Flask EKS — GitOps with Helm and ArgoCD
+# Flask EKS — Cloud Native Three-Tier Architecture
 
-Production-grade Flask application deployed on AWS EKS using Helm, ArgoCD GitOps, and GitHub Actions CI/CD.
+A production-grade cloud native application deployed on AWS EKS using modern DevOps practices including GitOps, Helm, and full observability.
 
 ## Architecture
-Developer pushes code
+Developer
+│
+│ git push
+▼
+GitHub (flask-eks)
+│                         │
+│ GitHub Actions           │ ArgoCD watches
+│ Test → Build → Push ECR  │ values.yaml changes
+▼                         ▼
+Amazon ECR              EKS Cluster (ap-southeast-2)
+flask-app:sha    ──►    three-tier namespace
+│
+┌─────────┴──────────┐
+▼                    ▼
+Flask Pod 1          Flask Pod 2
+(ap-southeast-2a)    (ap-southeast-2b)
 │
 ▼
-GitHub Actions:
-
-Run tests
-Build Docker image
-Push to ECR
-Update values.yaml with new image tag
-│
-▼
-ArgoCD detects values.yaml change
-│
-▼
-Auto deploys to EKS (zero downtime) ✅
-
+RDS MySQL
+(threetierdb)
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
-| **App** | Python Flask REST API |
+| **Cloud** | AWS (ap-southeast-2) |
 | **Container** | Docker + Amazon ECR |
-| **Orchestration** | Amazon EKS (Kubernetes 1.30) |
-| **Package Manager** | Helm |
+| **Orchestration** | Kubernetes (EKS 1.31) |
+| **Package Manager** | Helm 3 |
 | **GitOps** | ArgoCD |
 | **CI/CD** | GitHub Actions |
-| **Auto Scaling** | Horizontal Pod Autoscaler (HPA) |
-| **Infrastructure** | Terraform (separate repo) |
+| **Monitoring** | Prometheus + Grafana |
+| **App** | Python Flask REST API |
+| **Database** | Amazon RDS MySQL |
+| **Infrastructure** | Terraform (modular) |
 
 ## Repository Structure
 flask-eks/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml      ← CI/CD pipeline
-├── flask-chart/            ← Helm chart
-│   ├── Chart.yaml          ← chart metadata
-│   ├── values.yaml         ← default values
+│       └── deploy.yml        ← CI/CD pipeline
+├── flask-chart/              ← Helm chart
+│   ├── Chart.yaml
+│   ├── values.yaml           ← default values (no secrets)
 │   └── templates/
-│       ├── _helpers.tpl    ← reusable snippets
+│       ├── _helpers.tpl
 │       ├── namespace.yaml
 │       ├── secret.yaml
 │       ├── configmap.yaml
 │       ├── deployment.yaml
 │       ├── service.yaml
-│       └── hpa.yaml
-├── k8s/                    ← raw Kubernetes manifests
+│       ├── hpa.yaml
+│       ├── servicemonitor.yaml
+│       └── prometheusrule.yaml
+├── k8s/                      ← raw Kubernetes manifests
+│   ├── namespace.yaml
+│   ├── secret.yaml
+│   ├── configmap.yaml
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── hpa.yaml
 ├── tests/
-│   └── test_app.py         ← unit tests
-├── app.py                  ← Flask application
-├── dockerfile              ← container definition
-└── requirements.txt        ← Python dependencies
+│   └── test_app.py           ← pytest unit tests
+├── app.py                    ← Flask application
+├── dockerfile                ← container definition
+└── requirements.txt          ← Python dependencies
+
+## CI/CD Pipeline
+
+Every push to `main` automatically:
+git push
+│
+▼
+GitHub Actions:
+
+Run pytest tests
+Build Docker image
+Push to Amazon ECR (tagged with git SHA)
+Update image tag in values.yaml
+Push values.yaml back to GitHub
+│
+▼
+ArgoCD detects values.yaml changed
+│
+▼
+Auto deploys new image to EKS (zero downtime)
+
+
+## Kubernetes Resources
+
+| Resource | Description |
+|---|---|
+| `Namespace` | Isolated `three-tier` namespace |
+| `Secret` | DB credentials (injected at runtime) |
+| `ConfigMap` | Non-sensitive app configuration |
+| `Deployment` | Flask app with rolling update strategy |
+| `Service` | LoadBalancer exposing app to internet |
+| `HPA` | Auto scales pods 2→6 based on CPU (50%) |
+| `ServiceMonitor` | Prometheus scraping config |
+| `PrometheusRule` | Alert rules for errors and latency |
+
+## Helm Chart
+
+```bash
+# Install
+helm install flask-app flask-chart \
+  --namespace three-tier \
+  --create-namespace \
+  --set database.host=YOUR-RDS-ENDPOINT \
+  --set database.password=YOUR-PASSWORD
+
+# Upgrade
+helm upgrade flask-app flask-chart \
+  --namespace three-tier \
+  --set image.tag=NEW-TAG
+
+# Rollback
+helm rollback flask-app 1 --namespace three-tier
+
+# History
+helm history flask-app --namespace three-tier
+```
+
+## GitOps with ArgoCD
+
+```bash
+# Create ArgoCD application
+argocd app create flask-app \
+  --repo https://github.com/sar0j/flask-eks.git \
+  --path flask-chart \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace three-tier \
+  --sync-policy automated \
+  --auto-prune \
+  --self-heal
+
+# Check status
+argocd app get flask-app
+
+# Manual sync
+argocd app sync flask-app
+```
+
+## Monitoring
+
+### Prometheus + Grafana
+
+```bash
+# Install monitoring stack
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install prometheus \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set grafana.adminPassword=YOUR-PASSWORD \
+  --set grafana.service.type=LoadBalancer \
+  --set prometheus.service.type=LoadBalancer
+```
+
+### Available Dashboards
+- Node Exporter / Nodes — CPU, Memory, Disk, Network
+- Kubernetes / Compute Resources / Cluster — cluster overview
+- Kubernetes / Compute Resources / Pod — per pod metrics
+- Flask App Metrics — custom request rate, error rate, latency
+
+### Custom Prometheus Alerts
+| Alert | Threshold |
+|---|---|
+| `HighErrorRate` | >0.1 errors/sec for 2 mins |
+| `HighResponseTime` | >1 second for 2 mins |
+| `PodDown` | <2 pods running for 1 min |
 
 ## API Endpoints
 
@@ -62,107 +183,63 @@ flask-eks/
 |---|---|---|
 | GET | `/` | Home page |
 | GET | `/health` | Health check |
+| GET | `/metrics` | Prometheus metrics |
 | GET | `/users` | List all users |
 | POST | `/users` | Create a user |
 | DELETE | `/users/:id` | Delete a user |
 
-## CI/CD Pipeline
+## Quick Start
 
-Every push to `main` automatically:
+### Prerequisites
+- AWS CLI configured
+- kubectl installed
+- Helm 3 installed
+- ArgoCD CLI installed
+- EKS cluster running
 
-1. Runs pytest unit tests
-2. Builds Docker image
-3. Pushes to Amazon ECR with commit SHA tag
-4. Updates `flask-chart/values.yaml` with new image tag
-5. Pushes updated values.yaml to GitHub
-6. ArgoCD detects the change and deploys to EKS
+### Deploy
 
-## Helm Chart
-
-### Install
 ```bash
+# 1. Configure kubectl
+aws eks update-kubeconfig \
+  --name three-tier-eks \
+  --region ap-southeast-2
+
+# 2. Install with Helm
 helm install flask-app flask-chart \
   --namespace three-tier \
   --create-namespace \
+  --set image.repository=YOUR-ECR-REPO \
   --set database.host=YOUR-RDS-ENDPOINT \
   --set database.password=YOUR-PASSWORD
-```
 
-### Upgrade
-```bash
-helm upgrade flask-app flask-chart \
-  --namespace three-tier \
-  --set image.tag=NEW-TAG
-```
-
-### Rollback
-```bash
-helm rollback flask-app 1 --namespace three-tier
-```
-
-### History
-```bash
-helm history flask-app --namespace three-tier
-```
-
-## ArgoCD GitOps
-
-### Create Application
-```bash
-argocd app create flask-app \
-  --repo https://github.com/sar0j/flask-eks.git \
-  --path flask-chart \
-  --dest-server https://kubernetes.default.svc \
-  --dest-namespace three-tier \
-  --helm-set database.host=YOUR-RDS-ENDPOINT \
-  --helm-set database.password=YOUR-PASSWORD \
-  --sync-policy automated \
-  --auto-prune \
-  --self-heal
-```
-
-### Check Status
-```bash
-argocd app get flask-app
-argocd app sync flask-app
-```
-
-## Kubernetes Commands
-
-```bash
-# View all resources
+# 3. Verify
 kubectl get all -n three-tier
-
-# View pods
-kubectl get pods -n three-tier
-
-# View logs
-kubectl logs -f <pod-name> -n three-tier
-
-# View HPA
 kubectl get hpa -n three-tier
-
-# Scale manually
-kubectl scale deployment flask-app \
-  --replicas=4 -n three-tier
 ```
 
-## GitOps Workflow
-Git is the source of truth:
-values.yaml change → ArgoCD detects → auto deploys
-Manual k8s change  → ArgoCD detects → auto reverts ← self healing!
-Pod crashes        → K8s detects    → auto restarts ← self healing!
-CPU > 50%          → HPA detects    → auto scales   ← auto scaling!
+### Verify
 
-## Prerequisites
+```bash
+kubectl get pods -n three-tier
+kubectl get svc -n three-tier
+kubectl top pods -n three-tier
+kubectl get hpa -n three-tier
+```
 
-- AWS CLI configured
-- kubectl installed
-- Helm 3.x installed
-- ArgoCD CLI installed
-- eksctl installed
-- Terraform installed
+### Cleanup
 
-## Related Repositories
+```bash
+helm uninstall flask-app --namespace three-tier
+helm uninstall prometheus --namespace monitoring
+```
 
-- [flask-three-tier](https://github.com/sar0j/flask-three-tier) — Docker + ECS + GitHub Actions
+## Key DevOps Concepts Demonstrated
+
+- **GitOps** — Git as single source of truth
+- **Immutable infrastructure** — every deploy is a new image tag
+- **Zero downtime deployments** — rolling update strategy
+- **Auto scaling** — HPA scales pods based on CPU
+- **Self healing** — ArgoCD reverts manual cluster changes
+- **Observability** — metrics, dashboards and alerts
+- **Security** — secrets never committed to Git
