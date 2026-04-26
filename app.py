@@ -30,7 +30,7 @@ def get_db():
 @app.route("/")
 def home():
     return f"""
-    <h1>Flask App - Three Tier Architecture</h1>
+    <h1>Flask App Update - Three Tier Architecture</h1>
     <p><b>Container:</b> {socket.gethostname()}</p>
     <p><b>Version:</b> {os.environ.get('APP_VERSION', '1.0.0')}</p>
     <p><a href='/users'>View Users</a></p>
