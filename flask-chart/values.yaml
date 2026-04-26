@@ -2,7 +2,7 @@
 app:
   name: flask-app
   version: "1.0.0"
-  replicas: 2
+  replicas: 3
 
 # Container image
 image:
