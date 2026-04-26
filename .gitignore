@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+*.pem
+*.key
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfvars
+flask-chart/values.prod.yaml
