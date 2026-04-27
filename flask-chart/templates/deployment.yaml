@@ -20,6 +20,10 @@ spec:
       labels:
         {{- include "flask-chart.labels" . | nindent 8 }}
     spec:
+      securityContext:
+        runAsNonRoot: true        # ← pass no-root policy
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: {{ .Values.app.name }}
           image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
