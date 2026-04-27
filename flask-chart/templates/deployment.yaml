@@ -24,6 +24,11 @@ spec:
         - name: {{ .Values.app.name }}
           image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false   # ← security hardening
+            readOnlyRootFilesystem: true       # ← security hardening
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           env:

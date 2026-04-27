@@ -4,27 +4,30 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install curl for ECS health checks
+# Install curl for health checks
 RUN apt-get update && \
     apt-get install -y curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install dependencies first (cached layer)
+# Install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip==26.0 wheel==0.46.2 jaraco.context==6.1.0 && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --upgrade wheel==0.46.2 jaraco.context==6.1.0 && \
+    find /usr/local/lib -path "*/setuptools/_vendor/jaraco*" -delete && \
+    find /usr/local/lib -path "*/setuptools/_vendor/wheel*" -delete
 
 # Copy app code
 COPY app.py .
 
-# Environment variables (overridden at runtime)
+# Environment variables
 ENV DB_HOST=localhost
 ENV DB_USER=admin
-ENV DB_PASSWORD=password
 ENV DB_NAME=threetierdb
 ENV APP_VERSION=1.0.0
 
 # Expose port
 EXPOSE 5000
 
-# Run the app
+# Run app
 CMD ["python", "app.py"]
