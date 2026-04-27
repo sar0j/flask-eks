@@ -218,7 +218,7 @@ kubectl get all -n three-tier
 kubectl get hpa -n three-tier
 ```
 
-### Verify
+### Verify it
 
 ```bash
 kubectl get pods -n three-tier
