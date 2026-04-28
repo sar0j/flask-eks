@@ -7,7 +7,7 @@ app:
 # Container image
 image:
   repository: 093487859784.dkr.ecr.ap-southeast-2.amazonaws.com/flask-app
-  tag: 2007f10b19169ab8a3faa96866a04cfb592ce338
+  tag: fe5f30505b7820940e19449162ea97b6e15b8372
   pullPolicy: Always
 
 # Database settings
