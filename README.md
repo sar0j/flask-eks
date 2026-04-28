@@ -1,6 +1,6 @@
 # Flask EKS — Cloud Native Three-Tier Architecture
 
-A production-grade cloud native application deployed on AWS EKS using modern DevOps practices including GitOps, Helm, and full observability.
+A production-grade cloud native application deployed on AWS EKS using modern DevOps practices including GitOps, Helm, Prometheus monitoring, and DevSecOps security scanning.
 
 ## Architecture
 Developer
@@ -8,12 +8,13 @@ Developer
 │ git push
 ▼
 GitHub (flask-eks)
-│                         │
-│ GitHub Actions           │ ArgoCD watches
-│ Test → Build → Push ECR  │ values.yaml changes
-▼                         ▼
-Amazon ECR              EKS Cluster (ap-southeast-2)
-flask-app:sha    ──►    three-tier namespace
+│                              │
+│ GitHub Actions               │ ArgoCD watches
+│ Test → SAST → Build          │ values.yaml changes
+│ → Trivy Scan → Push ECR      │
+▼                              ▼
+Amazon ECR                   EKS Cluster (ap-southeast-2)
+flask-app:sha    ──────────► three-tier namespace
 │
 ┌─────────┴──────────┐
 ▼                    ▼
@@ -23,6 +24,10 @@ Flask Pod 1          Flask Pod 2
 ▼
 RDS MySQL
 (threetierdb)
+│
+▼
+Prometheus + Grafana
+(monitoring namespace)
 
 ## Tech Stack
 
@@ -34,6 +39,7 @@ RDS MySQL
 | **Package Manager** | Helm 3 |
 | **GitOps** | ArgoCD |
 | **CI/CD** | GitHub Actions |
+| **Security** | Trivy + Bandit + OPA Gatekeeper |
 | **Monitoring** | Prometheus + Grafana |
 | **App** | Python Flask REST API |
 | **Database** | Amazon RDS MySQL |
@@ -43,7 +49,7 @@ RDS MySQL
 flask-eks/
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml        ← CI/CD pipeline
+│       └── deploy.yml        ← CI/CD + security pipeline
 ├── flask-chart/              ← Helm chart
 │   ├── Chart.yaml
 │   ├── values.yaml           ← default values (no secrets)
@@ -52,8 +58,8 @@ flask-eks/
 │       ├── namespace.yaml
 │       ├── secret.yaml
 │       ├── configmap.yaml
-│       ├── deployment.yaml
-│       ├── service.yaml
+│       ├── deployment.yaml   ← non-root, resource limits
+│       ├── service.yaml      ← Prometheus annotations
 │       ├── hpa.yaml
 │       ├── servicemonitor.yaml
 │       └── prometheusrule.yaml
@@ -64,32 +70,52 @@ flask-eks/
 │   ├── deployment.yaml
 │   ├── service.yaml
 │   └── hpa.yaml
+├── opa/                      ← OPA Gatekeeper policies
+│   ├── require-resources.yaml
+│   ├── no-root-containers.yaml
+│   └── no-latest-tag.yaml
 ├── tests/
 │   └── test_app.py           ← pytest unit tests
 ├── app.py                    ← Flask application
 ├── dockerfile                ← container definition
 └── requirements.txt          ← Python dependencies
 
-## CI/CD Pipeline
+## CI/CD Security Pipeline
 
-Every push to `main` automatically:
+Every push to `main` runs a full secure pipeline:
 git push
 │
 ▼
 GitHub Actions:
 
-Run pytest tests
-Build Docker image
-Push to Amazon ECR (tagged with git SHA)
-Update image tag in values.yaml
-Push values.yaml back to GitHub
+pytest tests          ← functionality
+Bandit SAST scan      ← Python code security
+docker build          ← create image
+Trivy image scan      ← container vulnerabilities
+Trivy K8s scan        ← manifest misconfigurations
+docker push ECR       ← only if all scans pass
+Update values.yaml    ← trigger ArgoCD
 │
 ▼
 ArgoCD detects values.yaml changed
 │
 ▼
-Auto deploys new image to EKS (zero downtime)
+OPA Gatekeeper validates policies
+│
+▼
+Zero downtime rolling deployment ✅
 
+
+## Security Layers
+
+| Layer | Tool | What it checks |
+|---|---|---|
+| Code | Bandit | Hardcoded secrets, SQL injection, debug mode |
+| Container | Trivy | OS + Python package CVEs |
+| Manifests | Trivy config | K8s misconfigurations |
+| Runtime | OPA Gatekeeper | No root, resource limits, no latest tag |
+| App | Input validation | Request size, required fields |
+| Secrets | GitHub Secrets | Never committed to Git |
 
 ## Kubernetes Resources
 
@@ -98,11 +124,23 @@ Auto deploys new image to EKS (zero downtime)
 | `Namespace` | Isolated `three-tier` namespace |
 | `Secret` | DB credentials (injected at runtime) |
 | `ConfigMap` | Non-sensitive app configuration |
-| `Deployment` | Flask app with rolling update strategy |
-| `Service` | LoadBalancer exposing app to internet |
+| `Deployment` | Flask app — non-root, read-only fs, resource limits |
+| `Service` | LoadBalancer with Prometheus scrape annotations |
 | `HPA` | Auto scales pods 2→6 based on CPU (50%) |
 | `ServiceMonitor` | Prometheus scraping config |
 | `PrometheusRule` | Alert rules for errors and latency |
+
+## OPA Gatekeeper Policies
+
+```bash
+# Apply all policies
+kubectl apply -f opa/
+
+# Policies enforced:
+# ✅ All containers must have CPU + memory limits
+# ✅ No containers running as root
+# ❌ No :latest tag (BLOCKED - deny mode)
+```
 
 ## Helm Chart
 
@@ -148,10 +186,9 @@ argocd app sync flask-app
 
 ## Monitoring
 
-### Prometheus + Grafana
+### Install Prometheus + Grafana
 
 ```bash
-# Install monitoring stack
 helm repo add prometheus-community \
   https://prometheus-community.github.io/helm-charts
 helm repo update
@@ -168,7 +205,7 @@ helm install prometheus \
 - Node Exporter / Nodes — CPU, Memory, Disk, Network
 - Kubernetes / Compute Resources / Cluster — cluster overview
 - Kubernetes / Compute Resources / Pod — per pod metrics
-- Flask App Metrics — custom request rate, error rate, latency
+- Flask App Metrics — request rate, error rate, latency
 
 ### Custom Prometheus Alerts
 | Alert | Threshold |
@@ -185,7 +222,7 @@ helm install prometheus \
 | GET | `/health` | Health check |
 | GET | `/metrics` | Prometheus metrics |
 | GET | `/users` | List all users |
-| POST | `/users` | Create a user |
+| POST | `/users` | Create a user (validates input) |
 | DELETE | `/users/:id` | Delete a user |
 
 ## Quick Start
@@ -197,15 +234,15 @@ helm install prometheus \
 - ArgoCD CLI installed
 - EKS cluster running
 
-### Deploy
+### Deploy Infrastructure
 
 ```bash
-# 1. Configure kubectl
+# Configure kubectl
 aws eks update-kubeconfig \
   --name three-tier-eks \
   --region ap-southeast-2
 
-# 2. Install with Helm
+# Install with Helm
 helm install flask-app flask-chart \
   --namespace three-tier \
   --create-namespace \
@@ -213,18 +250,45 @@ helm install flask-app flask-chart \
   --set database.host=YOUR-RDS-ENDPOINT \
   --set database.password=YOUR-PASSWORD
 
-# 3. Verify
-kubectl get all -n three-tier
-kubectl get hpa -n three-tier
+# Apply OPA policies
+kubectl apply -f opa/
+
+# Install monitoring
+helm install prometheus \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace \
+  --set grafana.adminPassword=YOUR-PASSWORD \
+  --set grafana.service.type=LoadBalancer
 ```
 
-### Verify it
+### Verify
 
 ```bash
 kubectl get pods -n three-tier
 kubectl get svc -n three-tier
 kubectl top pods -n three-tier
 kubectl get hpa -n three-tier
+kubectl get constraints -A
+```
+
+### Run Security Scans Locally
+
+```bash
+# Install tools
+pip install bandit
+brew install aquasecurity/trivy/trivy
+
+# Scan Python code
+bandit -r app.py
+
+# Scan Docker image
+docker build -t flask-app:local .
+trivy image --severity HIGH,CRITICAL flask-app:local
+
+# Scan K8s manifests
+trivy config k8s/
+trivy config flask-chart/
 ```
 
 ### Cleanup
@@ -232,14 +296,20 @@ kubectl get hpa -n three-tier
 ```bash
 helm uninstall flask-app --namespace three-tier
 helm uninstall prometheus --namespace monitoring
+kubectl delete -f opa/
 ```
 
-## Key DevOps Concepts Demonstrated
+## DevOps Concepts Demonstrated
 
-- **GitOps** — Git as single source of truth
-- **Immutable infrastructure** — every deploy is a new image tag
-- **Zero downtime deployments** — rolling update strategy
-- **Auto scaling** — HPA scales pods based on CPU
-- **Self healing** — ArgoCD reverts manual cluster changes
-- **Observability** — metrics, dashboards and alerts
-- **Security** — secrets never committed to Git
+| Concept | Implementation |
+|---|---|
+| GitOps | ArgoCD syncs Git → EKS automatically |
+| Immutable infrastructure | Every deploy is a new image SHA tag |
+| Zero downtime deployments | Rolling update strategy |
+| Auto scaling | HPA scales pods based on CPU |
+| Self healing | ArgoCD reverts manual cluster changes |
+| Observability | Prometheus metrics + Grafana dashboards |
+| Shift left security | Trivy + Bandit scan before push |
+| Policy as code | OPA Gatekeeper enforces K8s policies |
+| Least privilege | Non-root containers, dropped capabilities |
+| Secret management | Secrets injected at runtime, never in Git |
