@@ -2,61 +2,40 @@ name: Build, Scan and Push to ECR
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: write
-  security-events: write    # ← needed for uploading scan results
+  security-events: write
 
 env:
   AWS_REGION:     ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
 
 jobs:
-  # ─────────────────────────────────────
-  # Job 1: Run Tests
-  # ─────────────────────────────────────
   test:
     name: Run Tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+      - run: pip install -r requirements.txt pytest
+      - run: pytest tests/ -v
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest
-
-      - name: Run tests
-        run: pytest tests/ -v
-
-  # ─────────────────────────────────────
-  # Job 2: SAST - Static Code Analysis
-  # ─────────────────────────────────────
   sast:
     name: SAST Scan
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
-
-      - name: Install Bandit (Python SAST)
-        run: pip install bandit
-
+      - run: pip install bandit
       - name: Run Bandit scan
         run: |
           bandit -r app.py \
@@ -64,108 +43,18 @@ jobs:
             -o bandit-report.json \
             --severity-level medium || true
           cat bandit-report.json
-
-      - name: Upload Bandit report
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: bandit-report
           path: bandit-report.json
 
-  # ─────────────────────────────────────
-  # Job 3: Build Docker Image
-  # ─────────────────────────────────────
-  build:
-    name: Build Docker Image
-    runs-on: ubuntu-latest
-    needs: [test, sast]
-    if: github.ref == 'refs/heads/main'
-    outputs:
-      image: ${{ steps.build-image.outputs.image }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build Docker image
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG:    ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-  # ─────────────────────────────────────
-  # Job 4: Trivy Container Scan
-  # ─────────────────────────────────────
-  trivy-scan:
-    name: Trivy Container Scan
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Run Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ needs.build.outputs.image }}
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          exit-code: '0'          # ← 0 means don't fail pipeline yet
-
-      - name: Upload Trivy scan results
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-results.sarif
-
-      - name: Trivy scan summary
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ needs.build.outputs.image }}
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: '1'          # ← fail if CRITICAL found
-
-  # ─────────────────────────────────────
-  # Job 5: Scan K8s Manifests
-  # ─────────────────────────────────────
   manifest-scan:
     name: Scan K8s Manifests
     runs-on: ubuntu-latest
     needs: test
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run Trivy on K8s manifests
+      - uses: actions/checkout@v4
+      - name: Scan K8s manifests
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: config
@@ -173,8 +62,7 @@ jobs:
           format: table
           exit-code: '0'
           severity: HIGH,CRITICAL
-
-      - name: Run Trivy on Helm chart
+      - name: Scan Helm chart
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: config
@@ -183,17 +71,13 @@ jobs:
           exit-code: '0'
           severity: HIGH,CRITICAL
 
-  # ─────────────────────────────────────
-  # Job 6: Push to ECR
-  # ─────────────────────────────────────
-  push:
-    name: Push to ECR
+  build-and-scan:
+    name: Build, Scan and Push
     runs-on: ubuntu-latest
-    needs: [trivy-scan, manifest-scan]
-
+    needs: [test, sast, manifest-scan]
+    if: github.ref == 'refs/heads/main'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -204,21 +88,49 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Login to Amazon ECR
+      - name: Login to ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Push image to ECR
+      - name: Build Docker image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG:    ${{ github.sha }}
         run: |
-          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+
+      - name: Trivy scan — SARIF upload
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+
+      - name: Upload to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Trivy scan — table summary
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+
+      - name: Push to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG:    ${{ github.sha }}
+        run: |
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
             $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "Pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
       - name: Update image tag in values.yaml
         env:
@@ -226,7 +138,7 @@ jobs:
         run: |
           sed -i "s/tag: .*/tag: $IMAGE_TAG/" flask-chart/values.yaml
 
-      - name: Commit updated values.yaml
+      - name: Commit values.yaml
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
